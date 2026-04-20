@@ -27,8 +27,11 @@ export const COLLECTIONS = {
   config: "config",
 } as const;
 
-/** config 컬렉션의 단일 설정 문서 ID */
+/** config 컬렉션의 일반 설정 문서 ID */
 export const CONFIG_DOC_ID = "app";
+
+/** 요금제·부스트 가격 문서 ID (`config/pricing`) */
+export const PRICING_DOC_ID = "pricing";
 
 export type UserRole = "user" | "admin";
 
