@@ -10,10 +10,12 @@ import {
   orderBy,
   query,
   setDoc,
+  startAfter,
   updateDoc,
   where,
   type DocumentData,
   type QueryConstraint,
+  type QueryDocumentSnapshot,
   type SetOptions,
   Timestamp,
 } from "firebase/firestore";
@@ -40,11 +42,21 @@ export type Animal = {
   userId: string;
   name: string;
   species: string;
+  /** 필터·표시용: dog | cat | other (문서에 없으면 species 문자열로 보조) */
+  speciesCode?: "dog" | "cat" | "other";
   age: number;
   photos: string[];
   completionScore: number;
   matchScore: number;
   status: string;
+  /** 중성화: done | pending */
+  neuterStatus?: "done" | "pending";
+  /** 접종: done | pending */
+  vaccineStatus?: "done" | "pending";
+  /** 시·도 (FilterBar region 값과 동일) */
+  region?: string;
+  /** 카드에 표시할 상세 위치 */
+  location?: string;
   createdAt: Timestamp;
   expiresAt: Timestamp | null;
   viewCount: number;
@@ -103,17 +115,45 @@ function assertTimestamp(value: unknown, field: string): Timestamp {
   throw new Error(`Expected Timestamp at ${field}`);
 }
 
+function parseSpeciesCode(
+  data: DocumentData
+): "dog" | "cat" | "other" | undefined {
+  const v = data.speciesCode;
+  if (v === "dog" || v === "cat" || v === "other") return v;
+  return undefined;
+}
+
+function parseDonePending(
+  data: DocumentData,
+  key: "neuterStatus" | "vaccineStatus"
+): "done" | "pending" | undefined {
+  const v = data[key];
+  if (v === "done" || v === "pending") return v;
+  return undefined;
+}
+
 function toAnimal(id: string, data: DocumentData): Animal {
   return {
     id,
     userId: String(data.userId ?? ""),
     name: String(data.name ?? ""),
     species: String(data.species ?? ""),
+    speciesCode: parseSpeciesCode(data),
     age: Number(data.age ?? 0),
     photos: Array.isArray(data.photos) ? data.photos.map(String) : [],
     completionScore: Number(data.completionScore ?? 0),
     matchScore: Number(data.matchScore ?? 0),
     status: String(data.status ?? ""),
+    neuterStatus: parseDonePending(data, "neuterStatus"),
+    vaccineStatus: parseDonePending(data, "vaccineStatus"),
+    region:
+      data.region !== undefined && data.region !== null
+        ? String(data.region)
+        : undefined,
+    location:
+      data.location !== undefined && data.location !== null
+        ? String(data.location)
+        : undefined,
     createdAt: assertTimestamp(data.createdAt, "createdAt"),
     expiresAt:
       data.expiresAt === null || data.expiresAt === undefined
@@ -208,6 +248,60 @@ export async function listAnimals(
       : query(collection(db, COLLECTIONS.animals));
   const snaps = await getDocs(q);
   return snaps.docs.map((d) => toAnimal(d.id, d.data()));
+}
+
+/** URL 필터와 동일한 키 — 값이 비어 있으면 해당 조건은 쿼리에 포함하지 않음 */
+export type AnimalListFilters = {
+  species?: string;
+  neuter?: string;
+  vaccine?: string;
+  region?: string;
+};
+
+/**
+ * 동물 목록 페이지 (커서 기반). `pageSize+1`건을 읽어 `hasMore`를 판별합니다.
+ * `where` + `orderBy("createdAt")` 조합은 Firestore 복합 인덱스가 필요할 수 있습니다.
+ */
+export async function listAnimalsPage(
+  filters: AnimalListFilters,
+  pageSize: number,
+  cursor: QueryDocumentSnapshot<DocumentData> | null,
+): Promise<{
+  animals: Animal[];
+  lastDoc: QueryDocumentSnapshot<DocumentData> | null;
+  hasMore: boolean;
+}> {
+  const constraints: QueryConstraint[] = [];
+  if (filters.species) {
+    constraints.push(where("speciesCode", "==", filters.species));
+  }
+  if (filters.neuter) {
+    constraints.push(where("neuterStatus", "==", filters.neuter));
+  }
+  if (filters.vaccine) {
+    constraints.push(where("vaccineStatus", "==", filters.vaccine));
+  }
+  if (filters.region) {
+    constraints.push(where("region", "==", filters.region));
+  }
+  constraints.push(orderBy("createdAt", "desc"));
+  if (cursor) {
+    constraints.push(startAfter(cursor));
+  }
+  constraints.push(limit(pageSize + 1));
+
+  const q = query(collection(db, COLLECTIONS.animals), ...constraints);
+  const snaps = await getDocs(q);
+  const docs = snaps.docs;
+  if (docs.length === 0) {
+    return { animals: [], lastDoc: null, hasMore: false };
+  }
+  const hasMore = docs.length > pageSize;
+  const pageDocs = hasMore ? docs.slice(0, pageSize) : docs;
+  const animals = pageDocs.map((d) => toAnimal(d.id, d.data()));
+  const lastDoc =
+    pageDocs.length > 0 ? pageDocs[pageDocs.length - 1]! : null;
+  return { animals, lastDoc, hasMore };
 }
 
 export async function listAnimalsByUserId(userId: string): Promise<Animal[]> {
