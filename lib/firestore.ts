@@ -45,10 +45,18 @@ export type Animal = {
   /** 필터·표시용: dog | cat | other (문서에 없으면 species 문자열로 보조) */
   speciesCode?: "dog" | "cat" | "other";
   age: number;
+  /** 수컷 / 암컷 / 알 수 없음 등 */
+  gender?: string;
   photos: string[];
   completionScore: number;
   matchScore: number;
   status: string;
+  /** 성격 설명 */
+  personality?: string;
+  /** 건강 상태 */
+  health?: string;
+  /** 파양 사유 */
+  surrenderReason?: string;
   /** 중성화: done | pending */
   neuterStatus?: "done" | "pending";
   /** 접종: done | pending */
@@ -140,7 +148,23 @@ function toAnimal(id: string, data: DocumentData): Animal {
     species: String(data.species ?? ""),
     speciesCode: parseSpeciesCode(data),
     age: Number(data.age ?? 0),
+    gender:
+      data.gender !== undefined && data.gender !== null
+        ? String(data.gender)
+        : undefined,
     photos: Array.isArray(data.photos) ? data.photos.map(String) : [],
+    personality:
+      data.personality !== undefined && data.personality !== null
+        ? String(data.personality)
+        : undefined,
+    health:
+      data.health !== undefined && data.health !== null
+        ? String(data.health)
+        : undefined,
+    surrenderReason:
+      data.surrenderReason !== undefined && data.surrenderReason !== null
+        ? String(data.surrenderReason)
+        : undefined,
     completionScore: Number(data.completionScore ?? 0),
     matchScore: Number(data.matchScore ?? 0),
     status: String(data.status ?? ""),
