@@ -1,14 +1,23 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
+import { signInAnonymously } from "firebase/auth";
 import { Timestamp } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
+import PortOne from "@portone/browser-sdk/v2";
 import { auth, storage } from "@/lib/firebase";
-import { createAnimal } from "@/lib/firestore";
+import {
+  createAnimal,
+  createUser,
+  getUser,
+  incrementUserRegisteredCount,
+} from "@/lib/firestore";
+import type { User } from "@/lib/firestore";
 import { useCompletionScore } from "@/lib/hooks/useCompletionScore";
 import { bottomTabBarContentPaddingClass } from "@/components/layout/BottomTabBar";
+import { VerificationModal } from "@/components/register/VerificationModal";
 
 const STEPS = [
   { id: 1, title: "기본 정보", desc: "이름 · 종류 · 나이 · 성별" },
@@ -132,6 +141,11 @@ export function RegisterForm() {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
+  const [gateLoading, setGateLoading] = useState(true);
+  const [profileUser, setProfileUser] = useState<User | null>(null);
+  const [verifyBusy, setVerifyBusy] = useState(false);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+
   const photosRef = useRef(photos);
   photosRef.current = photos;
   useEffect(() => {
@@ -139,6 +153,49 @@ export function RegisterForm() {
       photosRef.current.forEach((p) => URL.revokeObjectURL(p.blobUrl));
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        if (!auth.currentUser) {
+          await signInAnonymously(auth);
+        }
+        const uid = auth.currentUser?.uid;
+        if (!uid) throw new Error("로그인에 실패했습니다.");
+        let u = await getUser(uid);
+        if (!u) {
+          await createUser(uid, {
+            phone: "",
+            isVerified: false,
+            plan: "free",
+            registeredCount: 0,
+            role: "user",
+          });
+          u = await getUser(uid);
+        }
+        if (!cancelled) setProfileUser(u);
+      } catch (e) {
+        if (!cancelled) {
+          setFormError(
+            e instanceof Error ? e.message : "사용자 정보를 불러오지 못했습니다.",
+          );
+        }
+      } finally {
+        if (!cancelled) setGateLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (gateLoading || !profileUser) return;
+    if (profileUser.isVerified && profileUser.registeredCount >= 1) {
+      router.replace("/register/pricing");
+    }
+  }, [gateLoading, profileUser, router]);
 
   const completionInput = useMemo(
     () => ({
@@ -188,13 +245,71 @@ export function RegisterForm() {
     });
   }
 
+  const runPortOneVerification = useCallback(async () => {
+    setVerifyBusy(true);
+    setVerifyError(null);
+    try {
+      const storeId = process.env.NEXT_PUBLIC_PORTONE_STORE_ID;
+      const channelKey = process.env.NEXT_PUBLIC_PORTONE_IDENTITY_CHANNEL_KEY;
+      if (!storeId || !channelKey) {
+        throw new Error(
+          "NEXT_PUBLIC_PORTONE_STORE_ID / NEXT_PUBLIC_PORTONE_IDENTITY_CHANNEL_KEY 를 설정해 주세요.",
+        );
+      }
+      const identityVerificationId = `identity-verification-${crypto.randomUUID()}`;
+      const response = await PortOne.requestIdentityVerification({
+        storeId,
+        identityVerificationId,
+        channelKey,
+      });
+      if (response && response.code !== undefined) {
+        throw new Error(response.message ?? "본인인증이 완료되지 않았습니다.");
+      }
+      const user = auth.currentUser;
+      if (!user) throw new Error("로그인 상태가 아닙니다.");
+      const idToken = await user.getIdToken();
+      const res = await fetch("/api/identity-verification/complete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ identityVerificationId }),
+      });
+      const payload = (await res.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(payload.error ?? "서버에서 본인인증 처리에 실패했습니다.");
+      }
+      const u = await getUser(user.uid);
+      setProfileUser(u);
+      if (u && u.registeredCount >= 1) {
+        router.push("/register/pricing");
+      }
+    } catch (e) {
+      setVerifyError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setVerifyBusy(false);
+    }
+  }, [router]);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (step !== 3 || score < 40 || submitting) return;
+    if (!profileUser?.isVerified) {
+      setFormError("본인인증을 완료해 주세요.");
+      return;
+    }
+    if (profileUser.registeredCount >= 1) {
+      router.push("/register/pricing");
+      return;
+    }
     setFormError(null);
     setSubmitting(true);
     try {
-      const uid = auth.currentUser?.uid ?? "anonymous";
+      const uid = auth.currentUser?.uid;
+      if (!uid) throw new Error("로그인이 필요합니다.");
       const photoUrls =
         photos.length > 0 ? await uploadAnimalPhotos(photos, uid) : [];
 
@@ -219,6 +334,7 @@ export function RegisterForm() {
           Date.now() + 14 * 24 * 60 * 60 * 1000,
         ),
       });
+      await incrementUserRegisteredCount(uid);
       router.push("/");
     } catch (err) {
       setFormError(
@@ -230,9 +346,32 @@ export function RegisterForm() {
   }
 
   const lowCompletion = score < 40;
+  const showVerifyModal =
+    !gateLoading && !!profileUser && !profileUser.isVerified;
+
+  if (gateLoading) {
+    return (
+      <div
+        className={`mx-auto flex min-h-full w-full max-w-lg flex-col gap-4 px-4 py-8 ${bottomTabBarContentPaddingClass}`}
+      >
+        <div className="h-10 animate-pulse rounded-lg bg-zinc-200" />
+        <div className="h-24 animate-pulse rounded-2xl bg-zinc-200" />
+        <div className="h-40 animate-pulse rounded-2xl bg-zinc-200" />
+      </div>
+    );
+  }
 
   return (
-    <div className={`mx-auto flex min-h-full w-full max-w-lg flex-col ${bottomTabBarContentPaddingClass}`}>
+    <>
+      <VerificationModal
+        open={showVerifyModal}
+        busy={verifyBusy}
+        error={verifyError}
+        onVerify={runPortOneVerification}
+      />
+      <div
+        className={`mx-auto flex min-h-full w-full max-w-lg flex-col ${bottomTabBarContentPaddingClass} ${showVerifyModal ? "pointer-events-none opacity-40" : ""}`}
+      >
       <header className="sticky top-0 z-30 border-b border-zinc-200 bg-zinc-50/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-zinc-50/80">
         <CompletionGauge score={score} />
       </header>
@@ -504,7 +643,12 @@ export function RegisterForm() {
             ) : (
               <button
                 type="submit"
-                disabled={score < 40 || submitting}
+                disabled={
+                  score < 40 ||
+                  submitting ||
+                  !profileUser?.isVerified ||
+                  profileUser.registeredCount >= 1
+                }
                 className="flex-1 rounded-xl bg-[#1a2744] py-3 text-sm font-semibold text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {submitting ? "등록 중…" : "파양 공고 등록"}
@@ -519,5 +663,6 @@ export function RegisterForm() {
         </div>
       </form>
     </div>
+    </>
   );
 }

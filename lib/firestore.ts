@@ -390,6 +390,12 @@ export async function updateUser(
   await updateDoc(doc(db, COLLECTIONS.users, id), cleaned);
 }
 
+export async function incrementUserRegisteredCount(userId: string): Promise<void> {
+  await updateDoc(doc(db, COLLECTIONS.users, userId), {
+    registeredCount: increment(1),
+  });
+}
+
 export async function deleteUser(id: string): Promise<void> {
   await deleteDoc(doc(db, COLLECTIONS.users, id));
 }
