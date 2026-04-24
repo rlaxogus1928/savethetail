@@ -27,6 +27,8 @@ export const COLLECTIONS = {
   users: "users",
   applications: "applications",
   config: "config",
+  payments: "payments",
+  pendingOrders: "pendingOrders",
 } as const;
 
 /** config 컬렉션의 일반 설정 문서 ID */
@@ -68,6 +70,10 @@ export type Animal = {
   createdAt: Timestamp;
   expiresAt: Timestamp | null;
   viewCount: number;
+  /** 끌어올리기 만료 시각 */
+  boostUntil?: Timestamp;
+  /** 상단 노출 만료 시각 */
+  topUntil?: Timestamp;
 };
 
 export type AnimalCreateInput = Omit<Animal, "id" | "viewCount"> & {
@@ -81,6 +87,7 @@ export type AnimalUpdateInput = Partial<
 export type User = {
   id: string;
   phone: string;
+  email?: string;
   isVerified: boolean;
   plan: string;
   registeredCount: number;
@@ -91,12 +98,17 @@ export type UserCreateInput = Omit<User, "id">;
 
 export type UserUpdateInput = Partial<Omit<User, "id">>;
 
+export type ApplicationStatus = "pending" | "accepted" | "rejected";
+
 export type Application = {
   id: string;
   animalId: string;
   applicantId: string;
+  applicantName: string;
+  applicantEmail: string;
+  message?: string;
   contractLog: ContractLogEntry[];
-  status: string;
+  status: ApplicationStatus;
   createdAt: Timestamp;
 };
 
@@ -111,6 +123,23 @@ export type ApplicationCreateInput = Omit<Application, "id">;
 export type ApplicationUpdateInput = Partial<
   Omit<Application, "id" | "createdAt">
 >;
+
+export type PaymentType = "plan" | "bump" | "top";
+
+export type Payment = {
+  id: string;
+  userId: string;
+  animalId: string;
+  type: PaymentType;
+  itemId: string;
+  amount: number;
+  orderId: string;
+  paymentKey: string;
+  status: "paid";
+  createdAt: Timestamp;
+};
+
+export type PaymentCreateInput = Omit<Payment, "id">;
 
 /** 가격·부스트 등 운영 설정 (필드는 프로덕트에 맞게 확장) */
 export type AppConfig = {
@@ -184,6 +213,10 @@ function toAnimal(id: string, data: DocumentData): Animal {
         ? null
         : assertTimestamp(data.expiresAt, "expiresAt"),
     viewCount: Number(data.viewCount ?? 0),
+    boostUntil:
+      data.boostUntil instanceof Timestamp ? data.boostUntil : undefined,
+    topUntil:
+      data.topUntil instanceof Timestamp ? data.topUntil : undefined,
   };
 }
 
@@ -192,6 +225,10 @@ function toUser(id: string, data: DocumentData): User {
   return {
     id,
     phone: String(data.phone ?? ""),
+    email:
+      data.email !== undefined && data.email !== null
+        ? String(data.email)
+        : undefined,
     isVerified: Boolean(data.isVerified),
     plan: String(data.plan ?? ""),
     registeredCount: Number(data.registeredCount ?? 0),
@@ -212,6 +249,11 @@ function toContractLogEntry(raw: unknown): ContractLogEntry {
   };
 }
 
+function toApplicationStatus(v: unknown): ApplicationStatus {
+  if (v === "accepted" || v === "rejected") return v;
+  return "pending";
+}
+
 function toApplication(id: string, data: DocumentData): Application {
   const rawLog = data.contractLog;
   const contractLog = Array.isArray(rawLog)
@@ -221,8 +263,14 @@ function toApplication(id: string, data: DocumentData): Application {
     id,
     animalId: String(data.animalId ?? ""),
     applicantId: String(data.applicantId ?? ""),
+    applicantName: String(data.applicantName ?? ""),
+    applicantEmail: String(data.applicantEmail ?? ""),
+    message:
+      data.message !== undefined && data.message !== null
+        ? String(data.message)
+        : undefined,
     contractLog,
-    status: String(data.status ?? ""),
+    status: toApplicationStatus(data.status),
     createdAt: assertTimestamp(data.createdAt, "createdAt"),
   };
 }
@@ -479,4 +527,11 @@ export async function updateConfig(
 /** 자주 쓰는 쿼리 보조: 최근 N건 */
 export function recent(limitCount: number) {
   return [orderBy("createdAt", "desc"), limit(limitCount)];
+}
+
+// ——— payments ———
+
+export async function createPayment(input: PaymentCreateInput): Promise<string> {
+  const ref = await addDoc(collection(db, COLLECTIONS.payments), input);
+  return ref.id;
 }

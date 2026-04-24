@@ -10,11 +10,13 @@
   },
   "dependencies": {
     "@portone/browser-sdk": "^0.1.5",
+    "@tosspayments/tosspayments-sdk": "^2.7.0",
     "firebase": "^12.12.0",
     "firebase-admin": "^13.8.0",
     "next": "16.2.4",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "resend": "^6.12.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

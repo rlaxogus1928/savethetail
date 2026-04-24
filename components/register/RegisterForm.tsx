@@ -13,6 +13,7 @@ import {
   createUser,
   getUser,
   incrementUserRegisteredCount,
+  updateUser,
 } from "@/lib/firestore";
 import type { User } from "@/lib/firestore";
 import { useCompletionScore } from "@/lib/hooks/useCompletionScore";
@@ -145,6 +146,7 @@ export function RegisterForm() {
   const [profileUser, setProfileUser] = useState<User | null>(null);
   const [verifyBusy, setVerifyBusy] = useState(false);
   const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [notifEmail, setNotifEmail] = useState("");
 
   const photosRef = useRef(photos);
   photosRef.current = photos;
@@ -282,7 +284,16 @@ export function RegisterForm() {
       if (!res.ok) {
         throw new Error(payload.error ?? "서버에서 본인인증 처리에 실패했습니다.");
       }
-      const u = await getUser(user.uid);
+      let u = await getUser(user.uid);
+      if (notifEmail.trim()) {
+        try {
+          const email = notifEmail.trim().toLowerCase();
+          await updateUser(user.uid, { email });
+          if (u) u = { ...u, email };
+        } catch {
+          // 이메일 저장 실패는 인증 흐름을 막지 않음
+        }
+      }
       setProfileUser(u);
       if (u && u.registeredCount >= 1) {
         router.push("/register/pricing");
@@ -292,17 +303,13 @@ export function RegisterForm() {
     } finally {
       setVerifyBusy(false);
     }
-  }, [router]);
+  }, [router, notifEmail]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (step !== 3 || score < 40 || submitting) return;
     if (!profileUser?.isVerified) {
       setFormError("본인인증을 완료해 주세요.");
-      return;
-    }
-    if (profileUser.registeredCount >= 1) {
-      router.push("/register/pricing");
       return;
     }
     setFormError(null);
@@ -314,6 +321,32 @@ export function RegisterForm() {
         photos.length > 0 ? await uploadAnimalPhotos(photos, uid) : [];
 
       const ageNum = Number(ageStr);
+
+      if (profileUser.registeredCount >= 1) {
+        // 2번째 이상 등록: 결제 전까지 pending_payment 상태로 생성
+        const animalId = await createAnimal({
+          userId: uid,
+          name: name.trim(),
+          species: speciesKorean(speciesCode as SpeciesCode),
+          speciesCode: speciesCode as SpeciesCode,
+          gender,
+          age: ageNum,
+          photos: photoUrls,
+          completionScore: score,
+          matchScore: 50,
+          status: "pending_payment",
+          personality: personality.trim() || undefined,
+          health: health.trim() || undefined,
+          surrenderReason: surrenderReason.trim() || undefined,
+          neuterStatus: neuter === "" ? undefined : neuter,
+          createdAt: Timestamp.now(),
+          expiresAt: null,
+        });
+        await incrementUserRegisteredCount(uid);
+        router.push(`/register/pricing?animalId=${animalId}`);
+        return;
+      }
+
       await createAnimal({
         userId: uid,
         name: name.trim(),
@@ -345,6 +378,28 @@ export function RegisterForm() {
     }
   }
 
+  async function handleDevSkip() {
+    setVerifyBusy(true);
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error("로그인 상태가 아닙니다.");
+      const patch: Parameters<typeof updateUser>[1] = {
+        isVerified: true,
+        phone: "dev-skip",
+      };
+      if (notifEmail.trim()) {
+        patch.email = notifEmail.trim().toLowerCase();
+      }
+      await updateUser(user.uid, patch);
+      const u = await getUser(user.uid);
+      setProfileUser(u);
+    } catch (e) {
+      setVerifyError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setVerifyBusy(false);
+    }
+  }
+
   const lowCompletion = score < 40;
   const showVerifyModal =
     !gateLoading && !!profileUser && !profileUser.isVerified;
@@ -368,6 +423,9 @@ export function RegisterForm() {
         busy={verifyBusy}
         error={verifyError}
         onVerify={runPortOneVerification}
+        onDevSkip={handleDevSkip}
+        email={notifEmail}
+        onEmailChange={setNotifEmail}
       />
       <div
         className={`mx-auto flex min-h-full w-full max-w-lg flex-col ${bottomTabBarContentPaddingClass} ${showVerifyModal ? "pointer-events-none opacity-40" : ""}`}
